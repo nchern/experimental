@@ -29,10 +29,8 @@ func (q *queue) Dequeue(n int) ([]string, bool) {
 		return nil, false
 	}
 
-	i := len(q.items) - n
-
-	res := q.items[i:]
-	q.items = q.items[:i]
+	res := q.items[:n]
+	q.items = q.items[n:]
 
 	return res, true
 }
