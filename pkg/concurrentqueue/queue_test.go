@@ -2,15 +2,17 @@ package concurrentqueue
 
 import (
 	"fmt"
-	"sync"
+	"runtime"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
+const parallelCount = 100
+
 var (
-	parallelCount = 100
-	inputs        = genIputs(parallelCount)
+	inputs = genIputs(parallelCount)
 )
 
 func TestEnqueueAndDeque(t *testing.T) {
@@ -55,71 +57,75 @@ func TestDequeueN(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func BenchmarkLockerQueueConcurrentEnqueue(b *testing.B) {
-	expectedLength := parallelCount * b.N
+func doBenchmarkConcurrentEnqueue(b *testing.B, q Queue) {
+	var expectedLength int64
 
-	var q Queue = &queue{}
+	b.SetParallelism(runtime.NumCPU() * 10)
 
-	for i := 0; i < b.N; i++ {
-		var wg sync.WaitGroup
-		wg.Add(parallelCount)
-		for j := 0; j < parallelCount; j++ {
-			go func(i int) {
-				q.Enqueue(inputs[i])
-				wg.Done()
-			}(j)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			q.Enqueue("a")
+			atomic.AddInt64(&expectedLength, 1)
 		}
-		wg.Wait()
-	}
-	if q.Len() != expectedLength {
+	})
+
+	if q.Len() != int(expectedLength) {
 		b.Errorf("Unexpected length: %d", q.Len())
 	}
+
+}
+
+func doBenchmarkConcurrentDequeue(b *testing.B, q Queue, dequeLen int) {
+	b.SetParallelism(runtime.NumCPU() * 10)
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			q.Dequeue(dequeLen)
+		}
+	})
+	assert.Zero(b, q.Len())
+}
+
+func doBenchmarkConcurrentComplexOps(b *testing.B, q Queue) {
+	var i int64
+	var removed int64
+	dequeLen := 2
+	b.SetParallelism(runtime.NumCPU() * 10)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			atomic.AddInt64(&i, 0)
+			if (int(i)+1)%(dequeLen+1) == 0 {
+				_, ok := q.Dequeue(dequeLen)
+				assert.True(b, ok)
+				atomic.AddInt64(&removed, int64(dequeLen))
+			} else {
+				q.Enqueue("a")
+			}
+		}
+	})
+	//assert.Equal(b, int(i-removed+1), q.Len())
+}
+
+func BenchmarkLockerQueueConcurrentEnqueue(b *testing.B) {
+	var q Queue = &queue{}
+	doBenchmarkConcurrentEnqueue(b, q)
 }
 
 func BenchmarkLockerQueueConcurrentDequeue(b *testing.B) {
 	dequeLen := 3
-	total := parallelCount * b.N * dequeLen
+	total := b.N * dequeLen
 	inputs := genIputs(total)
 	q := NewLockerQueue(inputs)
 
-	for i := 0; i < b.N; i++ {
-		var wg sync.WaitGroup
-		wg.Add(parallelCount)
-		for j := 0; j < parallelCount; j++ {
-			go func(i int) {
-				q.Dequeue(dequeLen)
-				wg.Done()
-			}(j)
-		}
-		wg.Wait()
-	}
-	if q.Len() != 0 {
-		b.Errorf("Unexpected length: %d", q.Len())
-	}
+	doBenchmarkConcurrentDequeue(b, q, dequeLen)
 }
 
 func BenchmarkLockerQueueConcurrentComplexOps(b *testing.B) {
-	dequeLen := 2
 	var q Queue = &queue{}
-
-	for i := 0; i < b.N; i++ {
-		var wg sync.WaitGroup
-		wg.Add(parallelCount)
-		for j := 0; j < parallelCount; j++ {
-			if (j+1)%(dequeLen+1) == 0 {
-				go func(i int) {
-					q.Dequeue(dequeLen)
-					wg.Done()
-				}(j)
-			} else {
-				go func(i int) {
-					q.Enqueue(inputs[i])
-					wg.Done()
-				}(j)
-			}
-		}
-		wg.Wait()
-	}
+	doBenchmarkConcurrentComplexOps(b, q)
 }
 
 func BenchmarkLockerQueueEnqueue(b *testing.B) {
