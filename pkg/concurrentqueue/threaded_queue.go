@@ -1,44 +1,48 @@
 package concurrentqueue
 
-type taskLen struct {
-	res chan int
-}
+type Cmd int
 
-type taskEnqueue struct {
-	item string
+const (
+	cmdLen Cmd = iota
+	cmdEnqueue
+	cmdDequeue
+)
 
+type task struct {
+	cmd Cmd
 	res chan bool
-}
 
-type taskDequeue struct {
-	n int
+	resLen int
 
-	items []string
-	res   chan bool
+	enqueueItem string
+
+	dequeueN   int
+	resDequeue []string
 }
 
 type threadedQueue struct {
 	items []string
 
-	tasks chan interface{}
+	tasks chan *task
 }
 
 func executor(q *threadedQueue) {
-	for t := range q.tasks {
-		switch tsk := t.(type) {
-		case *taskLen:
-			tsk.res <- len(q.items)
-		case *taskEnqueue:
-			q.items = append(q.items, tsk.item)
+	for tsk := range q.tasks {
+		switch tsk.cmd {
+		case cmdLen:
+			tsk.resLen = len(q.items)
 			tsk.res <- true
-		case *taskDequeue:
-			n := tsk.n
+		case cmdEnqueue:
+			q.items = append(q.items, tsk.enqueueItem)
+			tsk.res <- true
+		case cmdDequeue:
+			n := tsk.dequeueN
 			if n > len(q.items) {
 				tsk.res <- false
 				continue
 			}
 
-			tsk.items = q.items[:n]
+			tsk.resDequeue = q.items[:n]
 			q.items = q.items[n:]
 			tsk.res <- true
 		default:
@@ -48,7 +52,7 @@ func executor(q *threadedQueue) {
 }
 
 func NewThreadedQueue(items []string) Queue {
-	q := &threadedQueue{tasks: make(chan interface{}, 10)}
+	q := &threadedQueue{tasks: make(chan *task, 10)}
 	copy(q.items, items)
 
 	go executor(q)
@@ -57,20 +61,23 @@ func NewThreadedQueue(items []string) Queue {
 }
 
 func (q *threadedQueue) Len() int {
-	t := &taskLen{make(chan int, 1)}
+	t := &task{res: make(chan bool, 1), cmd: cmdLen}
 	q.tasks <- t
 
-	return <-t.res
+	<-t.res
+	return t.resLen
+
 }
 
 func (q *threadedQueue) Dequeue(n int) ([]string, bool) {
-	t := &taskDequeue{n: n, res: make(chan bool, 1)}
+	t := &task{dequeueN: n, res: make(chan bool, 1), cmd: cmdDequeue}
 	q.tasks <- t
-	return t.items, <-t.res
+
+	return t.resDequeue, <-t.res
 }
 
 func (q *threadedQueue) Enqueue(s string) {
-	t := &taskEnqueue{res: make(chan bool, 1), item: s}
+	t := &task{res: make(chan bool, 1), enqueueItem: s, cmd: cmdEnqueue}
 	q.tasks <- t
 	<-t.res
 }
